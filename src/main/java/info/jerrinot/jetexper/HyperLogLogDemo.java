@@ -5,7 +5,6 @@ import com.clearspring.analytics.stream.cardinality.ICardinality;
 import com.hazelcast.config.SerializerConfig;
 import com.hazelcast.jet.Jet;
 import com.hazelcast.jet.JetInstance;
-import com.hazelcast.jet.Job;
 import com.hazelcast.jet.aggregate.AggregateOperation;
 import com.hazelcast.jet.aggregate.AggregateOperation1;
 import com.hazelcast.jet.aggregate.AggregateOperation2;
@@ -24,36 +23,34 @@ import org.ajbrown.namemachine.NameGenerator;
 import java.util.HashSet;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static com.hazelcast.jet.config.ProcessingGuarantee.AT_LEAST_ONCE;
-import static com.hazelcast.jet.function.DistributedFunction.identity;
 import static com.hazelcast.jet.impl.util.Util.toLocalTime;
 import static com.hazelcast.jet.pipeline.Sinks.logger;
 import static com.hazelcast.jet.pipeline.WindowDefinition.sliding;
 import static com.hazelcast.jet.pipeline.WindowDefinition.tumbling;
 
 public class HyperLogLogDemo {
-    private static final long WINDOW_SIZE = 30_000;
-    private static final long SLIDING_STEP = 5_000;
+    private static final long WINDOW_SIZE = 15_000;
+    private static final long SLIDING_STEP = 1_000;
 
+    private static final int HYPERLOGLOG_PRECISION = 10;
     private static final DistributedSupplier<AtomicReference<ICardinality>> CARDINALITY_SUPPLIER =
-            () -> new AtomicReference<>(new HyperLogLogPlus(18, 25));
+            () -> new AtomicReference<>(new HyperLogLogPlus(HYPERLOGLOG_PRECISION));
 
     public static void main(String[] args)  {
+        JetInstance jet = startNewInstance();
+
+        JobConfig jobConfig = new JobConfig().setName("hyperloglog demo");
         Pipeline pipeline = createPipeline();
 
-        JetInstance jet = startNewInstance();
-        JobConfig jobConfig = new JobConfig()
-                .setProcessingGuarantee(AT_LEAST_ONCE) //blocked by #
-                .setName("myJob");
-        Job job = jet.newJobIfAbsent(pipeline, jobConfig);
-        job.join();
+        jet.newJobIfAbsent(pipeline, jobConfig)
+                .join();
     }
 
     private static Pipeline createPipeline() {
         Pipeline pipeline = Pipeline.create();
-        StreamSource<Name> src = createSource();
+        StreamSource<Name> source = randomNamesSource();
 
-        StageWithWindow<Name> slidingWindow = pipeline.drawFrom(src)
+        StageWithWindow<Name> slidingWindow = pipeline.drawFrom(source)
                 .withIngestionTimestamps()
                 .window(sliding(WINDOW_SIZE, SLIDING_STEP));
 
@@ -62,32 +59,32 @@ public class HyperLogLogDemo {
                 .setName("hll aggregation")
                 .groupingKey(TimestampedItem::timestamp);
 
-        StreamStageWithKey<TimestampedItem<Long>, Long> setStreamGroupByTimestamp = slidingWindow
+        StreamStageWithKey<TimestampedItem<Long>, Long> setStreamGroupedByTimestamp = slidingWindow
                 .aggregate(setAggregationOp())
                 .setName("set aggregation")
                 .groupingKey(TimestampedItem::timestamp);
 
-        setStreamGroupByTimestamp
+        hllStreamGroupedByTimestamp
                 .window(tumbling(SLIDING_STEP))
-                .aggregate2(hllStreamGroupedByTimestamp, cogroupOp())
-                .setName("cogroup")
+                .aggregate2(setStreamGroupedByTimestamp, joinOp())
+                .setName("stream join")
                 .drainTo(logger(e -> toLocalTime(e.getKey()) + ", " + e.getValue()));
         return pipeline;
     }
 
-    private static StreamSource<Name> createSource() {
+    private static StreamSource<Name> randomNamesSource() {
         return SourceBuilder.stream("name generator", c -> new NameGenerator())
                     .<Name>fillBufferFn((s, b) -> b.add(s.generateName()))
                     .build();
     }
 
-    private static AggregateOperation2<TimestampedItem<Long>, TimestampedItem<Long>, LongTuple, LongTuple> cogroupOp() {
+    private static AggregateOperation2<TimestampedItem<Long>, TimestampedItem<Long>, ?, LongTuple> joinOp() {
         return AggregateOperation
                     .withCreate(LongTuple::new)
-                    .<TimestampedItem<Long>>andAccumulate((a, i) -> a.setLeft(i.item()))
+                    .<TimestampedItem<Long>>andAccumulate0((a, i) -> a.setLeft(i.item()))
                     .<TimestampedItem<Long>>andAccumulate1((a, i) -> a.setRight(i.item()))
                     .andCombine(LongTuple::merge)
-                    .andExportFinish(identity());
+                    .andExportFinish(LongTuple::new);
     }
 
     private static AggregateOperation1<Name, ?, Long> hllAggregationOp() {
@@ -100,7 +97,7 @@ public class HyperLogLogDemo {
 
     private static AggregateOperation1<Name, HashSet<Name>, Long> setAggregationOp() {
         return AggregateOperation
-                    .withCreate(HashSet<Name>::new)
+                    .withCreate(() -> new HashSet<Name>(8_000_000))
                     .<Name>andAccumulate(HashSet::add)
                     .andCombine(HashSet::addAll)
                     .andExportFinish((a) -> (long)a.size());
@@ -109,10 +106,6 @@ public class HyperLogLogDemo {
     private static JetInstance startNewInstance() {
         JetConfig jetConfig = new JetConfig();
         jetConfig.getProperties().setProperty("hazelcast.logging.type", "slf4j");
-        jetConfig.getProperties().setProperty("hazelcast.diagnostics.metric.distributed.datastructures", "true");
-        jetConfig.getHazelcastConfig().getManagementCenterConfig()
-                .setEnabled(true)
-                .setUrl("http://localhost:8080/hazelcast-mancenter");
         jetConfig.getHazelcastConfig().getSerializationConfig().addSerializerConfig(
                 new SerializerConfig().setTypeClass(Name.class).setClass(NameSerializer.class)
         );

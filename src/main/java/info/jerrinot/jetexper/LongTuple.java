@@ -3,8 +3,17 @@ package info.jerrinot.jetexper;
 import java.io.Serializable;
 
 public final class LongTuple implements Serializable {
-    private Long left;
-    private Long right;
+    private long left;
+    private long right;
+
+    public LongTuple() {
+
+    }
+
+    public LongTuple(LongTuple otherTuple) {
+        this.left = otherTuple.getLeft();
+        this.right = otherTuple.getRight();
+    }
 
     public Long getLeft() {
         return left;
@@ -23,25 +32,22 @@ public final class LongTuple implements Serializable {
     }
 
     public void merge(LongTuple other) {
-        if (left == null) {
-            left = other.left;
-        } else if (other.left != null) {
-            left += other.left;
-        }
-
-        if (right == null) {
-            right = other.right;
-        } else if (other.right != null) {
-            right += other.right;
-        }
+        left += other.left;
+        right += other.right;
     }
 
     @Override
     public String toString() {
-        return "LongTuple{" +
-                "left=" + left +
-                ", right=" + right +
-                ", delta=" + Math.abs(left - right)+
-                '}';
+
+        long delta = Math.abs(left - right);
+        long max = Math.max(left, right);
+        double error = (double)delta / max * 100;
+
+        return "LongTuple{"
+                + "left=" + left
+                + ", right=" + right
+                + ", delta=" + delta
+                + ", error=" + String.format("%.2f", error) + '%'
+                + '}';
     }
 }
