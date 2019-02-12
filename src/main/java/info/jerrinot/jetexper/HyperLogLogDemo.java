@@ -8,6 +8,8 @@ import com.hazelcast.jet.JetInstance;
 import com.hazelcast.jet.aggregate.AggregateOperation;
 import com.hazelcast.jet.aggregate.AggregateOperation1;
 import com.hazelcast.jet.aggregate.AggregateOperation2;
+import com.hazelcast.jet.aggregate.AggregateOperation3;
+import com.hazelcast.jet.aggregate.AggregateOperations;
 import com.hazelcast.jet.config.JetConfig;
 import com.hazelcast.jet.config.JobConfig;
 import com.hazelcast.jet.datamodel.TimestampedItem;
@@ -19,6 +21,7 @@ import com.hazelcast.jet.pipeline.StreamSource;
 import com.hazelcast.jet.pipeline.StreamStageWithKey;
 import org.ajbrown.namemachine.Name;
 import org.ajbrown.namemachine.NameGenerator;
+import org.ajbrown.namemachine.NameMachine;
 
 import java.util.HashSet;
 import java.util.concurrent.atomic.AtomicReference;
@@ -31,6 +34,8 @@ import static com.hazelcast.jet.pipeline.WindowDefinition.tumbling;
 public class HyperLogLogDemo {
     private static final long WINDOW_SIZE = 15_000;
     private static final long SLIDING_STEP = 1_000;
+
+    private static final Name NAME = new NameGenerator().generateName();
 
     private static final int HYPERLOGLOG_PRECISION = 10;
     private static final DistributedSupplier<AtomicReference<ICardinality>> CARDINALITY_SUPPLIER =
@@ -60,13 +65,23 @@ public class HyperLogLogDemo {
                 .groupingKey(TimestampedItem::timestamp);
 
         StreamStageWithKey<TimestampedItem<Long>, Long> setStreamGroupedByTimestamp = slidingWindow
-                .aggregate(setAggregationOp())
-                .setName("set aggregation")
+                .aggregate(hllAggregationOp())
+                .setName("hll aggregation")
+                .groupingKey(TimestampedItem::timestamp);
+
+//        StreamStageWithKey<TimestampedItem<Long>, Long> setStreamGroupedByTimestamp = slidingWindow
+//                .aggregate(setAggregationOp())
+//                .setName("set aggregation")
+//                .groupingKey(TimestampedItem::timestamp);
+
+        StreamStageWithKey<TimestampedItem<Long>, Long> countStreamGroupedByTimestamp = slidingWindow
+                .aggregate(AggregateOperations.counting())
+                .setName("count aggregation")
                 .groupingKey(TimestampedItem::timestamp);
 
         hllStreamGroupedByTimestamp
                 .window(tumbling(SLIDING_STEP))
-                .aggregate2(setStreamGroupedByTimestamp, joinOp())
+                .aggregate3(setStreamGroupedByTimestamp, countStreamGroupedByTimestamp, joinOp())
                 .setName("stream join")
                 .drainTo(logger(e -> toLocalTime(e.getKey()) + ", " + e.getValue()));
         return pipeline;
@@ -74,17 +89,19 @@ public class HyperLogLogDemo {
 
     private static StreamSource<Name> randomNamesSource() {
         return SourceBuilder.stream("name generator", c -> new NameGenerator())
-                    .<Name>fillBufferFn((s, b) -> b.add(s.generateName()))
+//                    .<Name>fillBufferFn((s, b) -> b.add(s.generateName()))
+                .<Name>fillBufferFn((s, b) -> b.add(NAME))
                     .build();
     }
 
-    private static AggregateOperation2<TimestampedItem<Long>, TimestampedItem<Long>, ?, LongTuple> joinOp() {
+    private static AggregateOperation3<TimestampedItem<Long>, TimestampedItem<Long>, TimestampedItem<Long>, ?, LongTripple> joinOp() {
         return AggregateOperation
-                    .withCreate(LongTuple::new)
+                    .withCreate(LongTripple::new)
                     .<TimestampedItem<Long>>andAccumulate0((a, i) -> a.setLeft(i.item()))
                     .<TimestampedItem<Long>>andAccumulate1((a, i) -> a.setRight(i.item()))
-                    .andCombine(LongTuple::merge)
-                    .andExportFinish(LongTuple::new);
+                    .<TimestampedItem<Long>>andAccumulate2((a, i) -> a.setMiddle(i.item()))
+                    .andCombine(LongTripple::merge)
+                    .andExportFinish(LongTripple::new);
     }
 
     private static AggregateOperation1<Name, ?, Long> hllAggregationOp() {

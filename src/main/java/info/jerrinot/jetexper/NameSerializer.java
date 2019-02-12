@@ -1,10 +1,8 @@
 package info.jerrinot.jetexper;
 
-import com.hazelcast.nio.ObjectDataInput;
-import com.hazelcast.nio.ObjectDataOutput;
+import com.hazelcast.nio.*;
 import com.hazelcast.nio.serialization.StreamSerializer;
-import org.ajbrown.namemachine.Gender;
-import org.ajbrown.namemachine.Name;
+import org.ajbrown.namemachine.*;
 
 import java.io.IOException;
 
